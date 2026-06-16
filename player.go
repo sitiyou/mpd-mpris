@@ -92,25 +92,27 @@ type Status struct {
 	Volume         float64
 	CurrentSong    mpd.Song
 	// Internal seek
-	Seek     time.Duration
-	Seekable bool
+	Seek          time.Duration
+	Seekable      bool
+	lastUpdatedAt time.Time
 }
 
-// Update the seek by 1 automatically.
+// Advance the seek by the actual elapsed time since last update.
 func (s *Status) updateSeek(p *Player) {
 	if !s.mu.TryLock() {
 		return // It's not too important, anyway :P
 	}
 	defer s.mu.Unlock()
 	if s.PlaybackStatus == PlaybackStatusPlaying {
-		s.Seek += time.Second
+		s.Seek += time.Since(s.lastUpdatedAt)
+		s.lastUpdatedAt = time.Now()
 		go p.setProp("org.mpris.MediaPlayer2.Player", "Position", dbus.MakeVariant(UsFromDuration(s.Seek)))
 	}
 }
 
-// Polls every second to update the internal seek.
+// Polls periodically to update the internal seek.
 func (p *Player) pollSeek(ctx context.Context) {
-	ticker := time.NewTicker(time.Second)
+	ticker := time.NewTicker(p.Instance.pollInterval)
 	defer ticker.Stop()
 	for {
 		select {
@@ -194,6 +196,7 @@ func (s *Status) Update(p *Player) *dbus.Error {
 			go p.setProp("org.mpris.MediaPlayer2.Player", "Position", dbus.MakeVariant(UsFromDuration(status.Seek)))
 		}
 		s.Seek = status.Seek
+		s.lastUpdatedAt = time.Now()
 	}
 	if s.Seekable != status.Seekable {
 		s.Seekable = status.Seekable
@@ -312,6 +315,7 @@ func (p *Player) createStatus() {
 		CurrentSong:    song,
 		Seek:           status.Seek,
 		Seekable:       status.Seekable,
+		lastUpdatedAt:  time.Now(),
 	}
 
 	p.props = map[string]*prop.Prop{

@@ -1,6 +1,9 @@
 package mpris
 
-import "fmt"
+import (
+	"fmt"
+	"time"
+)
 
 // Option represents a togglable option.
 type Option func(*Instance)
@@ -24,5 +27,12 @@ func IsLocal(isLocal bool) Option {
 		if isLocal {
 			ins.displayName = "MPD"
 		}
+	}
+}
+
+// PollInterval sets the interval for updating the song position via software interpolation.
+func PollInterval(d time.Duration) Option {
+	return func(ins *Instance) {
+		ins.pollInterval = d
 	}
 }

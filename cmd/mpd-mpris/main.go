@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	mpris "github.com/natsukagami/mpd-mpris"
 	"github.com/natsukagami/mpd-mpris/mpd"
@@ -23,8 +24,9 @@ var (
 	optPassword  string
 	passwordFile string
 
-	noInstance bool
-	instance   string
+	noInstance   bool
+	instance     string
+	pollInterval time.Duration
 
 	isLocal = false
 )
@@ -37,6 +39,7 @@ func init() {
 	flag.StringVar(&passwordFile, "pwd-file", "", "Path to the file containing the mpd server password.")
 	flag.BoolVar(&noInstance, "no-instance", false, "Set the MPRIS's interface as 'org.mpris.MediaPlayer2.mpd' instead of 'org.mpris.MediaPlayer2.mpd.instance#'")
 	flag.StringVar(&instance, "instance-name", "", "Set the MPRIS's interface as 'org.mpris.MediaPlayer2.mpd.{instance-name}'")
+	flag.DurationVar(&pollInterval, "poll-interval", 50*time.Millisecond, "Interval for software position interpolation (e.g. 50ms, 100ms)")
 }
 
 func detectLocalSocket() {
@@ -138,6 +141,7 @@ func main() {
 
 	opts := []mpris.Option{
 		mpris.IsLocal(isLocal),
+		mpris.PollInterval(pollInterval),
 	}
 	if noInstance && instance != "" {
 		log.Fatalln("-no-instance cannot be used with -instance-name")

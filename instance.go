@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/godbus/dbus/v5/introspect"
 
@@ -27,6 +28,8 @@ type Instance struct {
 	name string
 
 	displayName string
+
+	pollInterval time.Duration
 }
 
 // Close ends the connection.
@@ -56,7 +59,8 @@ func NewInstance(mpd *mpd.Client, opts ...Option) (ins *Instance, err error) {
 
 		name: fmt.Sprintf("org.mpris.MediaPlayer2.mpd.instance%d", os.Getpid()),
 
-		displayName: fmt.Sprintf("MPD on %s", mpd.Address),
+		displayName:  fmt.Sprintf("MPD on %s", mpd.Address),
+		pollInterval: 50 * time.Millisecond,
 	}
 	if ins.dbus, err = dbus.SessionBus(); err != nil {
 		return nil, errors.WithStack(err)
