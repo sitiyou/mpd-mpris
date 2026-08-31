@@ -30,7 +30,7 @@ func IsLocal(isLocal bool) Option {
 	}
 }
 
-// PollInterval sets the interval for updating the song position via software interpolation.
+// PollInterval sets the interval for re-syncing the position with MPD.
 func PollInterval(d time.Duration) Option {
 	return func(ins *Instance) {
 		ins.pollInterval = d

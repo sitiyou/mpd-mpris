@@ -39,7 +39,7 @@ func init() {
 	flag.StringVar(&passwordFile, "pwd-file", "", "Path to the file containing the mpd server password.")
 	flag.BoolVar(&noInstance, "no-instance", false, "Set the MPRIS's interface as 'org.mpris.MediaPlayer2.mpd' instead of 'org.mpris.MediaPlayer2.mpd.instance#'")
 	flag.StringVar(&instance, "instance-name", "", "Set the MPRIS's interface as 'org.mpris.MediaPlayer2.mpd.{instance-name}'")
-	flag.DurationVar(&pollInterval, "poll-interval", 50*time.Millisecond, "Interval for software position interpolation (e.g. 50ms, 100ms)")
+	flag.DurationVar(&pollInterval, "poll-interval", time.Second, "Interval for re-syncing the position with MPD (e.g. 1s, 500ms)")
 }
 
 func detectLocalSocket() {

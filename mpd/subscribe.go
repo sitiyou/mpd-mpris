@@ -2,10 +2,15 @@ package mpd
 
 import (
 	"context"
+	"time"
 
 	"github.com/fhs/gompd/v2/mpd"
 	"github.com/pkg/errors"
 )
+
+// ErrPollTimeout is returned by Watcher.Poll when no event arrived within the
+// given timeout.
+var ErrPollTimeout = errors.New("mpd: poll timeout")
 
 // Watcher is our implementation of the watcher.
 // It automatically subscribes to MPRIS-related events and
@@ -33,8 +38,19 @@ func NewWatcher(net, addr, passwd string) (*Watcher, error) {
 	return &Watcher{w}, nil
 }
 
-// Poll waits for the next event, or errors out.
-func (w *Watcher) Poll(ctx context.Context) error {
+// Poll waits for the next event, or errors out. If no event arrives within
+// timeout, it returns ErrPollTimeout; timeout <= 0 waits indefinitely.
+func (w *Watcher) Poll(ctx context.Context, timeout time.Duration) error {
+	if timeout <= 0 {
+		select {
+		case <-w.Event:
+			return nil
+		case err := <-w.Error:
+			return errors.Wrap(err, "polling for events")
+		case <-ctx.Done():
+			return context.Canceled
+		}
+	}
 	select {
 	case <-w.Event:
 		return nil
@@ -42,5 +58,7 @@ func (w *Watcher) Poll(ctx context.Context) error {
 		return errors.Wrap(err, "polling for events")
 	case <-ctx.Done():
 		return context.Canceled
+	case <-time.After(timeout):
+		return ErrPollTimeout
 	}
 }

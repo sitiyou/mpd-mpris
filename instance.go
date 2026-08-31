@@ -60,7 +60,7 @@ func NewInstance(mpd *mpd.Client, opts ...Option) (ins *Instance, err error) {
 		name: fmt.Sprintf("org.mpris.MediaPlayer2.mpd.instance%d", os.Getpid()),
 
 		displayName:  fmt.Sprintf("MPD on %s", mpd.Address),
-		pollInterval: 50 * time.Millisecond,
+		pollInterval: time.Second,
 	}
 	if ins.dbus, err = dbus.SessionBus(); err != nil {
 		return nil, errors.WithStack(err)
@@ -79,6 +79,16 @@ func NewInstance(mpd *mpd.Client, opts ...Option) (ins *Instance, err error) {
 		"org.mpris.MediaPlayer2":        ins.root.properties(),
 		"org.mpris.MediaPlayer2.Player": ins.player.props,
 	})
+	if err != nil {
+		return nil, errors.WithStack(err)
+	}
+	// Replaces the Properties handler registered by prop.Export so that
+	// Position is computed on read instead of being pushed by a timer; the
+	// embedded prop.Properties still emits all other PropertiesChanged
+	// signals.
+	if err := ins.dbus.Export(&lazyProps{Properties: ins.props, player: ins.player}, "/org/mpris/MediaPlayer2", "org.freedesktop.DBus.Properties"); err != nil {
+		return nil, errors.WithStack(err)
+	}
 	return
 }
 
@@ -93,15 +103,21 @@ func (ins *Instance) Start(ctx context.Context) error {
 		return errors.WithStack(err)
 	}
 
-	// Set up a periodic updaters
+	// Keep the MPD connection alive in the background.
 	go ins.mpd.Keepalive(ctx)
-	go ins.player.pollSeek(ctx)
 
 	// Set up a status updater
 	for {
-		if err := ins.mpd.Poll(ctx); errors.Is(err, context.Canceled) {
-			return nil
-		} else if err != nil {
+		if err := ins.mpd.Poll(ctx, ins.pollInterval); err != nil {
+			if errors.Is(err, mpd.ErrPollTimeout) {
+				// No player events, but keep the position anchored to MPD's
+				// actual elapsed so it cannot drift.
+				ins.player.anchorSeek()
+				continue
+			}
+			if errors.Is(err, context.Canceled) {
+				return nil
+			}
 			return errors.Wrap(err, "cannot poll mpd")
 		}
 		if err := ins.player.update(); err != nil {

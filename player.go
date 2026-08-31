@@ -1,7 +1,6 @@
 package mpris
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"math"
@@ -97,29 +96,29 @@ type Status struct {
 	lastUpdatedAt time.Time
 }
 
-// Advance the seek by the actual elapsed time since last update.
-func (s *Status) updateSeek(p *Player) {
-	if !s.mu.TryLock() {
-		return // It's not too important, anyway :P
-	}
+// position returns the current playback position: the anchored value
+// extrapolated by wall clock while playing, frozen otherwise.
+func (s *Status) position() time.Duration {
+	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.PlaybackStatus == PlaybackStatusPlaying {
-		s.Seek += time.Since(s.lastUpdatedAt)
-		s.lastUpdatedAt = time.Now()
-		go p.setProp("org.mpris.MediaPlayer2.Player", "Position", dbus.MakeVariant(UsFromDuration(s.Seek)))
+		return s.Seek + time.Since(s.lastUpdatedAt)
 	}
+	return s.Seek
 }
 
-// Polls periodically to update the internal seek.
-func (p *Player) pollSeek(ctx context.Context) {
-	ticker := time.NewTicker(p.Instance.pollInterval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			p.status.updateSeek(p)
+// anchorSeek re-anchors the position clock to MPD's actual elapsed, bounding
+// the extrapolation error during long stretches without player events. It must
+// be called from the same goroutine that runs Update, so MPD commands stay
+// serialized on one connection.
+func (p *Player) anchorSeek() {
+	s := &p.status
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.PlaybackStatus == PlaybackStatusPlaying {
+		if status, err := p.mpd.Status(); err == nil {
+			s.Seek = status.Seek
+			s.lastUpdatedAt = time.Now()
 		}
 	}
 }
@@ -130,6 +129,37 @@ func (p *Player) setProp(iface, name string, value dbus.Variant) {
 	if err := p.Instance.props.Set(iface, name, value); err != nil {
 		log.Printf("Setting %s %s failed: %+v\n", iface, name, errors.WithStack(err))
 	}
+}
+
+const playerInterface = "org.mpris.MediaPlayer2.Player"
+
+// lazyProps serves org.freedesktop.DBus.Properties on the player path,
+// computing Position on demand instead of having it pushed by a timer.
+// Everything else is delegated to the exported prop.Properties, which emits
+// the PropertiesChanged signals itself.
+type lazyProps struct {
+	*prop.Properties
+	player *Player
+}
+
+// Get implements org.freedesktop.DBus.Properties.Get.
+func (l *lazyProps) Get(iface, name string) (dbus.Variant, *dbus.Error) {
+	if iface == playerInterface && name == "Position" {
+		return dbus.MakeVariant(UsFromDuration(l.player.status.position())), nil
+	}
+	return l.Properties.Get(iface, name)
+}
+
+// GetAll implements org.freedesktop.DBus.Properties.GetAll.
+func (l *lazyProps) GetAll(iface string) (map[string]dbus.Variant, *dbus.Error) {
+	props, err := l.Properties.GetAll(iface)
+	if err != nil {
+		return nil, err
+	}
+	if iface == playerInterface {
+		props["Position"] = dbus.MakeVariant(UsFromDuration(l.player.status.position()))
+	}
+	return props, nil
 }
 
 // Update performs an update on the status.
@@ -149,6 +179,9 @@ func (s *Status) Update(p *Player) *dbus.Error {
 	}
 	if s.PlaybackStatus != playbackStatus {
 		s.PlaybackStatus = playbackStatus
+		// Reset the extrapolation base on state transitions, so that resuming
+		// cannot push the position forward by the whole paused duration.
+		s.lastUpdatedAt = time.Now()
 		go p.setProp("org.mpris.MediaPlayer2.Player", "PlaybackStatus", dbus.MakeVariant(playbackStatus))
 	}
 	// Loop status
@@ -192,8 +225,6 @@ func (s *Status) Update(p *Player) *dbus.Error {
 	if s.Seek != status.Seek {
 		if absDuration(s.Seek-status.Seek) > seekTriggerMinimum {
 			go p.Seeked(UsFromDuration(status.Seek))
-		} else {
-			go p.setProp("org.mpris.MediaPlayer2.Player", "Position", dbus.MakeVariant(UsFromDuration(status.Seek)))
 		}
 		s.Seek = status.Seek
 		s.lastUpdatedAt = time.Now()
@@ -462,14 +493,18 @@ func (p *Player) SetPosition(o TrackID, x TimeInUs) *dbus.Error {
 	if _, err := fmt.Sscanf(string(o), TrackIDFormat, &id); err != nil {
 		return p.transformErr(err)
 	}
-	if err := p.mpd.SeekID(id, int(x.Duration()/time.Second)); err != nil {
+	if err := p.mpd.SeekSongID(id, x.Duration()); err != nil {
 		return p.transformErr(err)
 	}
 	if err := p.status.Update(p); err != nil {
 		return err
 	}
-	// Unnatural seek, create signal
-	return p.Seeked(x)
+	status, err = p.mpd.Status()
+	if err != nil {
+		return p.transformErr(err)
+	}
+	// Seeked carries the position MPD actually applied, not the requested one.
+	return p.Seeked(UsFromDuration(status.Seek))
 }
 
 // Emit the Seeked DBus signal.
